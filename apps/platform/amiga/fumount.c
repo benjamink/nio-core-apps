@@ -83,13 +83,33 @@ static int parse_endpoint(const char *s, char dos_name[5])
     return 6 + index;
   return -1;
 }
+/* T: is RAM:T on a Workbench disk, but a bare (no Workbench) 1.3 boot has no
+ * T: assign; keep DOS from opening an "insert volume T" requester for it. */
+static BPTR open_quiet(const char *path, LONG mode)
+{
+  struct Process *self = (struct Process *)FindTask(NULL);
+  APTR old = self->pr_WindowPtr;
+  BPTR file;
+  self->pr_WindowPtr = (APTR)-1;
+  file = Open((CONST_STRPTR)path, mode);
+  self->pr_WindowPtr = old;
+  return file;
+}
+static void delete_quiet(const char *path)
+{
+  struct Process *self = (struct Process *)FindTask(NULL);
+  APTR old = self->pr_WindowPtr;
+  self->pr_WindowPtr = (APTR)-1;
+  (void)DeleteFile((CONST_STRPTR)path);
+  self->pr_WindowPtr = old;
+}
 static int load_logical_endpoint(int index, char dos_name[5])
 {
   static const char *const paths[] = { "T:FNLA", "T:FNLB" };
   BPTR file;
   LONG length;
 
-  file = Open((CONST_STRPTR)paths[index], MODE_OLDFILE);
+  file = open_quiet(paths[index], MODE_OLDFILE);
   if (file == 0)
     return -1;
   length = Read(file, (APTR)dos_name, 4);
@@ -102,7 +122,7 @@ static int load_logical_endpoint(int index, char dos_name[5])
 static void clear_logical_endpoint(int index)
 {
   static const char *const paths[] = { "T:FNLA", "T:FNLB" };
-  (void)DeleteFile((CONST_STRPTR)paths[index]);
+  delete_quiet(paths[index]);
 }
 static void clear_matching_logical_endpoint(const char *label)
 {
@@ -236,6 +256,14 @@ int main(int argc, char **argv)
   unit = parse_unit(argv[1]);
 #endif
   if (unit < 0) {
+#ifdef __KICK13__
+    /* The logical-unit record lives in T: (absent on a bare boot disk). */
+    if (logical_unit >= 0) {
+      fprintf(stderr, "Logical unit %d is not mounted; name the drive (e.g. DO0:)\n",
+              logical_unit);
+      return 10;
+    }
+#endif
     usage();
     return 10;
   }

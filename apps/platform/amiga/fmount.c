@@ -388,11 +388,22 @@ static int start_endpoint13(const wb13_endpoint_t *endpoint) {
     sprintf(mount_command, "C:Mount %s", endpoint->label);
     return Execute((CONST_STRPTR)mount_command, 0, 0) && device_exists13(endpoint->label);
 }
+/* T: is RAM:T on a Workbench disk, but a bare (no Workbench) 1.3 boot has no
+ * T: assign; keep DOS from opening an "insert volume T" requester for it. */
+static BPTR open_quiet(const char *path, LONG mode) {
+    struct Process *self = (struct Process *)FindTask(NULL);
+    APTR old = self->pr_WindowPtr;
+    BPTR file;
+    self->pr_WindowPtr = (APTR)-1;
+    file = Open((CONST_STRPTR)path, mode);
+    self->pr_WindowPtr = old;
+    return file;
+}
 static int logical_unit_is_mounted(int index, char label[5]) {
     static const char *const paths[] = { "T:FNLA", "T:FNLB" };
     BPTR file;
     LONG length;
-    file = Open((CONST_STRPTR)paths[index], MODE_OLDFILE);
+    file = open_quiet(paths[index], MODE_OLDFILE);
     if (file == 0)
         return 0;
     length = Read(file, (APTR)label, 4);
@@ -405,7 +416,7 @@ static int logical_unit_is_mounted(int index, char label[5]) {
 static void record_logical_unit(int index, const char *label) {
     static const char *const paths[] = { "T:FNLA", "T:FNLB" };
     BPTR file;
-    file = Open((CONST_STRPTR)paths[index], MODE_NEWFILE);
+    file = open_quiet(paths[index], MODE_NEWFILE);
     if (file != 0) {
         (void)Write(file, (APTR)label, 4);
         Close(file);
