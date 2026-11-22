@@ -20,13 +20,26 @@
 
 #define WB13_WRITEBACK_SETTLE_TICKS 250
 
-static void usage(void)
+/*
+ * One binary serves both DOS generations when built against the 2.0 headers
+ * (the bare boot disk's tools): Kickstart 1.3 takes the static-endpoint path,
+ * 2.0+ the dynamic DNx: path.  A __KICK13__ build has only the 1.3 path.
+ */
+static int running_kick13(void)
 {
 #ifdef __KICK13__
-  puts("Usage: FUMOUNT 0|1|DN0:|DN1:|HN0:|HN1:|DO0:|DO1:|HO0:|HO1:");
+  return 1;
 #else
-  puts("Usage: FUMOUNT 0|...|7");
+  return ((struct Library *)DOSBase)->lib_Version < 36;
 #endif
+}
+
+static void usage(int kick13)
+{
+  if (kick13)
+    puts("Usage: FUMOUNT 0|1|DN0:|DN1:|HN0:|HN1:|DO0:|DO1:|HO0:|HO1:");
+  else
+    puts("Usage: FUMOUNT 0|...|7");
 }
 
 #ifndef __KICK13__
@@ -55,7 +68,8 @@ static int parse_unit(const char *s)
 
   return -1;
 }
-#else
+#endif
+
 /* WB1.3 endpoint names identify both their static handler and real unit. */
 static int parse_endpoint(const char *s, char dos_name[5])
 {
@@ -135,7 +149,6 @@ static void clear_matching_logical_endpoint(const char *label)
       clear_logical_endpoint(index);
   }
 }
-#endif
 
 #ifndef __KICK13__
 static int get_handler_state(int unit)
@@ -145,7 +158,7 @@ static int get_handler_state(int unit)
   struct DosList *entry;
   int state;
 
-  sprintf(name, "DN%d", unit);
+  sprintf(name, "DN%ld", (long)unit);
 
   list = LockDosList(LDF_READ | LDF_DEVICES);
   if (!list)
@@ -189,7 +202,7 @@ static int wait_handler_retired(int unit)
   struct DosList *entry;
   BOOL retired;
 
-  sprintf(name, "DN%d", unit);
+  sprintf(name, "DN%ld", (long)unit);
 
   for (tries = 0; tries < 20; ++tries) {
     list = LockDosList(LDF_READ | LDF_DEVICES);
@@ -228,6 +241,7 @@ int main(int argc, char **argv)
   int unit;
   int rc = 0;
   int logical_unit = -1;
+  int kick13 = running_kick13();
   char dos_name[5];
   struct MsgPort *port;
   struct IOExtTD *request;
@@ -241,36 +255,37 @@ int main(int argc, char **argv)
 #endif
 
   if (argc != 2 || argv[1][0] == '?') {
-    usage();
+    usage(kick13);
     return 10;
   }
 
-#ifdef __KICK13__
-  if (argv[1][0] >= '0' && argv[1][0] <= '1' && argv[1][1] == '\0') {
-    logical_unit = argv[1][0] - '0';
-    unit = load_logical_endpoint(logical_unit, dos_name);
+  if (kick13) {
+    if (argv[1][0] >= '0' && argv[1][0] <= '1' && argv[1][1] == '\0') {
+      logical_unit = argv[1][0] - '0';
+      unit = load_logical_endpoint(logical_unit, dos_name);
+    } else {
+      unit = parse_endpoint(argv[1], dos_name);
+    }
   } else {
-    unit = parse_endpoint(argv[1], dos_name);
-  }
+#ifndef __KICK13__
+    unit = parse_unit(argv[1]);
 #else
-  unit = parse_unit(argv[1]);
+    unit = -1;
 #endif
+  }
   if (unit < 0) {
-#ifdef __KICK13__
     /* The logical-unit record lives in T: (absent on a bare boot disk). */
-    if (logical_unit >= 0) {
+    if (kick13 && logical_unit >= 0) {
       fprintf(stderr, "Logical unit %d is not mounted; name the drive (e.g. DO0:)\n",
               logical_unit);
       return 10;
     }
-#endif
-    usage();
+    usage(kick13);
     return 10;
   }
 
-#ifndef __KICK13__
-    sprintf(dos_name, "DN%d:", unit);
-#endif
+  if (!kick13)
+    sprintf(dos_name, "DN%ld:", (long)unit);
 
   port = CreatePort(NULL, 0);
   if (port == NULL) {
@@ -295,6 +310,7 @@ int main(int argc, char **argv)
   }
 
 #ifndef __KICK13__
+  if (!kick13) {
   /*
    * Live handler: FLUSH (fail-safe: no DIE, no eject), then ACTION_DIE
    * until dol_Task is null. DIE failure does not eject. Inactive handler:
@@ -392,19 +408,20 @@ int main(int argc, char **argv)
         goto cleanup;
     }
   }
+  }
 #endif
 
-#ifdef __KICK13__
-  /*
-   * The 1.3 FFS writes volume metadata asynchronously after a CLI copy
-   * returns.  Its handler does not safely accept ACTION_FLUSH/INHIBIT packet
-   * control, so allow its normal write-back interval to finish before making
-   * removable media absent.  The target's 250 DOS ticks are the five-second
-   * write-back interval established by the WB1.3 acceptance test.
-   */
-  Delay(WB13_WRITEBACK_SETTLE_TICKS);
-
-#endif
+  if (kick13) {
+    /*
+     * The 1.3 FFS writes volume metadata asynchronously after a CLI copy
+     * returns.  Its handler does not safely accept ACTION_FLUSH/INHIBIT
+     * packet control, so allow its normal write-back interval to finish
+     * before making removable media absent.  The target's 250 DOS ticks are
+     * the five-second write-back interval established by the WB1.3
+     * acceptance test.
+     */
+    Delay(WB13_WRITEBACK_SETTLE_TICKS);
+  }
 
   request->iotd_Req.io_Command = TD_EJECT;
   request->iotd_Req.io_Length = 0;
@@ -436,16 +453,14 @@ int main(int argc, char **argv)
      * the ordinary Amiga media-change sequence.
      */
     printf("DN%d: handler parked for reuse\n", unit);
-#endif
-  } else {
-#ifndef __KICK13__
+  } else if (!kick13) {
     /* Remove the DosList entry so the device can be unloaded.
      * Do NOT FreeDosEntry — MountList entries are system-managed. */
     char name[4];
     struct DosList *list;
     struct DosList *entry;
 
-    sprintf(name, "DN%d", unit);
+    sprintf(name, "DN%ld", (long)unit);
 
     list = LockDosList(LDF_WRITE | LDF_DEVICES);
     if (!list) {
@@ -478,12 +493,12 @@ cleanup:
   if (rc != 0)
     return rc;
 
-#ifdef __KICK13__
-  if (logical_unit >= 0)
-    clear_logical_endpoint(logical_unit);
-  else
-    clear_matching_logical_endpoint(dos_name);
-#endif
+  if (kick13) {
+    if (logical_unit >= 0)
+      clear_logical_endpoint(logical_unit);
+    else
+      clear_matching_logical_endpoint(dos_name);
+  }
 
   printf("Ejected %s\n", dos_name);
   return 0;

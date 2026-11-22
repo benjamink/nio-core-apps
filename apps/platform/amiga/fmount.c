@@ -55,7 +55,7 @@ static void snapshot_node(int unit, node_snapshot_t *out) {
     struct FileSysStartupMsg *startup;
     struct DosEnvec *env;
     memset(out, 0, sizeof(*out));
-    sprintf(name, "DN%d", unit);
+    sprintf(name, "DN%ld", (long)unit);
     list = LockDosList(LDF_READ | LDF_DEVICES);
     if (!list)
         return;
@@ -149,7 +149,7 @@ static int update_inactive_envec(int unit, const fujinet_disk_media_profile_t *p
     struct DosList *list, *entry;
     struct FileSysStartupMsg *startup;
     struct DosEnvec *env;
-    sprintf(name, "DN%d", unit);
+    sprintf(name, "DN%ld", (long)unit);
     list = LockDosList(LDF_READ | LDF_DEVICES);
     if (!list)
         return 30;
@@ -180,7 +180,7 @@ static int create_node(int unit, const fujinet_disk_media_profile_t *profile, ui
     if (fujinet_disk_build_dos_envec(profile, dostype, &env) != FN_OK)
         return 30;
     printf("FMOUNT NODE before_make unit=%d\n", unit);
-    sprintf(names[unit], "DN%d", unit);
+    sprintf(names[unit], "DN%ld", (long)unit);
     packet[0] = (ULONG)names[unit];
     packet[1] = (ULONG)device;
     packet[2] = (ULONG)unit;
@@ -213,7 +213,8 @@ static void print_added_node(int unit) {
 }
 #endif
 
-#ifdef __KICK13__
+/* The Kickstart 1.3 path below is always built; the 2.0+ path above only
+ * against the 2.0 headers.  Such a build serves both ROMs (main). */
 #include "wb13_node.h"
 /*
  * Kickstart 1.3 has no public DOS-list locking or dynamic DosNode API.  The
@@ -224,7 +225,7 @@ static void print_added_node(int unit) {
  * HO0-1 (HD/OFS, units 6-7).  This is deliberately explicit: WB1.3 cannot
  * safely exchange an active DOS handler for another filesystem or geometry.
  */
-static void usage(void) {
+static void usage13(void) {
     puts("Usage: FMOUNT slot 0|1|DN0:|DN1:|HN0:|HN1:|DO0:|DO1:|HO0:|HO1: [RO|RW]");
 }
 typedef struct wb13_endpoint {
@@ -289,6 +290,7 @@ static void endpoint_for_media(int index, fujinet_disk_media_profile_kind_t prof
         endpoint->label[0] = 'H'; endpoint->label[1] = 'O'; endpoint->unit = 6 + index;
     }
 }
+#ifdef __KICK13__
 static int is_ro(const char *s) {
     return s && (s[0] == 'R' || s[0] == 'r') &&
            (s[1] == 'O' || s[1] == 'o') && !s[2];
@@ -297,6 +299,7 @@ static int is_rw(const char *s) {
     return s && (s[0] == 'R' || s[0] == 'r') &&
            (s[1] == 'W' || s[1] == 'w') && !s[2];
 }
+#endif
 #define WB13_BADDR(b) ((APTR)((ULONG)(b) << 2))
 #define WB13_MKBADDR(p) ((BPTR)((ULONG)(p) >> 2))
 
@@ -422,7 +425,7 @@ static void record_logical_unit(int index, const char *label) {
         Close(file);
     }
 }
-int main(int argc, char **argv) {
+static int main13(int argc, char **argv) {
     long slot_val = 0;
     uint8_t slot, readonly = 0;
     int unit = -1, logical_unit = -1, explicit_endpoint = 0, i;
@@ -436,7 +439,7 @@ int main(int argc, char **argv) {
     LONG result;
 
     if (argc < 2 || argc > 4 || argv[1][0] == '?') {
-        usage();
+        usage13();
         return 10;
     }
     for (i = 0; argv[1][i] >= '0' && argv[1][i] <= '9'; ++i)
@@ -449,14 +452,14 @@ int main(int argc, char **argv) {
     for (i = 2; i < argc; ++i) {
         if (parse_endpoint(argv[i], &endpoint)) {
             if (explicit_endpoint || logical_unit >= 0) {
-                usage();
+                usage13();
                 return 10;
             }
             unit = endpoint.unit;
             explicit_endpoint = 1;
         } else if (parse_logical_unit(argv[i]) >= 0) {
             if (explicit_endpoint || logical_unit >= 0) {
-                usage();
+                usage13();
                 return 10;
             }
             logical_unit = parse_logical_unit(argv[i]);
@@ -465,7 +468,7 @@ int main(int argc, char **argv) {
         else if (is_rw(argv[i]))
             readonly = 0;
         else {
-            usage();
+            usage13();
             return 10;
         }
     }
@@ -559,8 +562,8 @@ int main(int argc, char **argv) {
            dostype == FUJINET_AMIGA_DOS_FFS ? "FFS" : "OFS");
     return 0;
 }
-#else
-int main(int argc, char **argv) {
+#ifndef __KICK13__
+static int main20(int argc, char **argv) {
     long slot_val = 0;
     uint8_t slot, readonly = 0;
     int unit, i;
@@ -631,7 +634,7 @@ int main(int argc, char **argv) {
                      (node.bpt == profile.blocks_per_track && node.surfaces == profile.surfaces &&
                       node.low == profile.low_cylinder && node.high == profile.high_cylinder &&
                       node.dostype == dostype);
-        sprintf(dos_name, "DN%d:", unit);
+        sprintf(dos_name, "DN%ld:", (long)unit);
         if (node_parked(&node, request)) {
             if (!compatible) {
                 refuse_media_change(unit, &node);
@@ -702,3 +705,13 @@ fail:
     return 10;
 }
 #endif
+
+int main(int argc, char **argv) {
+#ifdef __KICK13__
+    return main13(argc, argv);
+#else
+    if (((struct Library *)DOSBase)->lib_Version < 36)
+        return main13(argc, argv);
+    return main20(argc, argv);
+#endif
+}
